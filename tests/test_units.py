@@ -230,7 +230,8 @@ def test_ytdlp_cmd_and_outputs(tmp_path):
     from kirinuki.source import find_outputs, is_url, ytdlp_cmd
     assert is_url("https://youtu.be/x") and not is_url("a.mp4")
     cmd = ytdlp_cmd("https://youtu.be/x", tmp_path)
-    assert "live_chat,ja" in cmd and "--write-subs" in cmd
+    assert "live_chat,ja,ja-orig" in cmd and "--write-auto-subs" in cmd
+    assert "--cookies" in ytdlp_cmd("u", tmp_path, cookies="c.txt")
     for n in ("source.mp4", "source.live_chat.json", "source.ja.vtt"):
         (tmp_path / n).write_text("x")
     src = find_outputs(tmp_path)
