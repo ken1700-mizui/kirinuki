@@ -49,6 +49,7 @@ def test_render_vertical(stream, tmp_path):
     assert abs(info["duration"] - expected) < 1.0
     rep = json.loads((tmp_path / "report.json").read_text())
     assert rep["clips"][0]["file"].endswith("clip_01.mp4")
+    assert (tmp_path / "clip_01.jpg").stat().st_size > 10_000
     assert "ガイドライン" in (tmp_path / "report.md").read_text()
     # ラウドネス -14 LUFS ±1.5
     r = subprocess.run(["ffmpeg", "-nostats", "-i", str(out), "-af", "ebur128", "-f", "null", "-"],

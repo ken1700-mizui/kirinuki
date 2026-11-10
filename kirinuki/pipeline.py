@@ -10,9 +10,10 @@ from . import llm
 from .audio import analyze_audio, probe
 from .chat import chat_signal, load_chat
 from .config import Config
-from .edit import plan_teaser, render
+from .edit import plan_teaser, render, render_thumbnail
 from .highlight import Timeline, build_timeline, generate_candidates, select
 from .models import Clip, Segment
+from .source import download, is_url
 from .text import reaction_words
 from .transcribe import load_transcript, save_json, transcribe_whisper
 
@@ -76,17 +77,30 @@ def analyze(video: str | Path, cfg: Config, transcript: str | Path | None = None
 
 
 def run(video: str | Path, out_dir: str | Path, cfg: Config, transcript: str | Path | None = None,
-        render_clips: bool = True, chat: str | Path | None = None, **kw) -> Analysis:
+        render_clips: bool = True, chat: str | Path | None = None, thumbnails: bool = True, **kw) -> Analysis:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    if isinstance(video, str) and is_url(video):
+        src = download(video, out_dir / "source")
+        log.info("取得: %s (chat=%s, subs=%s)", src.video, src.chat, src.subtitles)
+        video, chat = src.video, chat or src.chat
+        # 配信者が付けた字幕は Whisper より正確なことが多い
+        transcript = transcript or src.subtitles
     a = analyze(video, cfg, transcript, chat=chat, **kw)
     if a.segs and not transcript:
         save_json(a.segs, out_dir / "transcript.json")
 
-    files = []
+    files: list[dict] = []
     if render_clips:
         for i, c in enumerate(a.clips, 1):
-            files.append(str(render(video, c, a.segs, a.timeline.silences, a.info, out_dir, f"clip_{i:02d}", cfg)))
+            name = f"clip_{i:02d}"
+            entry = {"video": str(render(video, c, a.segs, a.timeline.silences, a.info, out_dir, name, cfg))}
+            if thumbnails and a.info["has_video"]:
+                try:
+                    entry["thumbnail"] = str(render_thumbnail(video, c, a.info, out_dir, name, cfg))
+                except RuntimeError as e:
+                    log.warning("%s", e)
+            files.append(entry)
     write_report(a, out_dir, files, str(video))
     return a
 
@@ -97,21 +111,26 @@ def _fmt(t: float) -> str:
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
 
-def write_report(a: Analysis, out_dir: Path, files: list[str], src: str) -> None:
+def write_report(a: Analysis, out_dir: Path, files: list[dict], src: str) -> None:
     data = {
         "source": src,
         "duration": a.info["duration"],
         "used_llm": a.used_llm,
-        "clips": [dict(c.to_dict(), file=files[i] if i < len(files) else None) for i, c in enumerate(a.clips)],
+        "clips": [dict(c.to_dict(), file=(files[i] if i < len(files) else {}).get("video"),
+                       thumbnail=(files[i] if i < len(files) else {}).get("thumbnail"))
+                  for i, c in enumerate(a.clips)],
     }
     (out_dir / "report.json").write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
     md = [f"# 切り抜きレポート\n", f"- 元動画: `{src}`", f"- 長さ: {_fmt(a.info['duration'])}",
           f"- LLM再ランク: {'あり' if a.used_llm else 'なし（ヒューリスティックのみ）'}\n",
-          "| # | 区間 | 尺 | スコア | タイトル | 理由 |", "|---|---|---|---|---|---|"]
+          "| # | 区間 | 尺 | スコア | タイトル | フック | ティーザー | 理由 |",
+          "|---|---|---|---|---|---|---|---|"]
+    esc = lambda x: (x or "-").replace("|", "｜")  # noqa: E731
     for i, c in enumerate(a.clips, 1):
+        teaser = f"{_fmt(c.teaser[0])}〜" if c.teaser else "-"
         md.append(f"| {i} | {_fmt(c.start)}〜{_fmt(c.end)} | {c.duration:.0f}s | {c.score:.3f} | "
-                  f"{c.title.replace('|', '｜')} | {c.reason.replace('|', '｜') or '-'} |")
+                  f"{esc(c.title)} | {esc(c.hook_text)} | {teaser} | {esc(c.reason)} |")
     md += ["", "## 投稿前チェックリスト",
            "- [ ] 配信者の切り抜きガイドライン（許可・収益化・クレジット表記）を確認した",
            "- [ ] 概要欄に元動画URLと配信者名を記載した",

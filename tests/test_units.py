@@ -223,3 +223,38 @@ def test_llm_failure_falls_back():
     assert llm.rerank(cands, segs, 100.0, Config(), client=fake) == cands
     fake = _fake_stream_factory(FakeClient(payload={}, stop="refusal"))
     assert llm.rerank(cands, segs, 100.0, Config(), client=fake) == cands
+
+
+# ---------- source / hook ----------
+def test_ytdlp_cmd_and_outputs(tmp_path):
+    from kirinuki.source import find_outputs, is_url, ytdlp_cmd
+    assert is_url("https://youtu.be/x") and not is_url("a.mp4")
+    cmd = ytdlp_cmd("https://youtu.be/x", tmp_path)
+    assert "live_chat,ja" in cmd and "--write-subs" in cmd
+    for n in ("source.mp4", "source.live_chat.json", "source.ja.vtt"):
+        (tmp_path / n).write_text("x")
+    src = find_outputs(tmp_path)
+    assert src.video.name == "source.mp4" and src.chat.name.endswith("live_chat.json")
+    assert src.subtitles.name == "source.ja.vtt"
+
+
+def test_hook_overlay_in_ass():
+    ass = build_ass([], "タイトル", 10, [], Config(), hook_text="まさかの展開")
+    assert "Style: Hook" in ass and ",Hook,," in ass and "まさかの展開" in ass
+    assert "Hook" not in build_ass([], "t", 10, [], Config()).split("[Events]")[1]
+
+
+@pytest.mark.parametrize("text,width,expected", [
+    ("油断した瞬間に完全敗北する配信者", 8, ["油断した瞬間に", "完全敗北する", "配信者"]),
+    ("ちょっと待ってって言ったじゃん！！", 14, ["ちょっと待ってって", "言ったじゃん！！"]),
+    ("アイテムはまだ取っておこうかな", 14, ["アイテムはまだ", "取っておこうかな"]),
+])
+def test_wrap_japanese_quality(text, width, expected):
+    assert wrap(text, width) == expected
+
+
+def test_wrap_never_drops_text():
+    for t in ["Hello world this is English text", "あ" * 40, "ーーーーーーーーーーーーーーーーーー", "草" * 29]:
+        lines = wrap(t, 14)
+        assert "".join(lines).replace(" ", "") == t.replace(" ", "")
+        assert all(len(x) <= 14 for x in lines)

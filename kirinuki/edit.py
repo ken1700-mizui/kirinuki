@@ -110,6 +110,20 @@ def loudnorm_filter(cfg: Config, measured: dict | None) -> str:
             f":offset={measured['target_offset']}:linear=true")
 
 
+def _frame_filter(cfg: Config, ass_name: str, src_label: str = "[0:v]", out_label: str = "[vout]") -> str:
+    W, H = cfg.width, cfg.height
+    if cfg.vertical:
+        return (
+            f"{src_label}fps={cfg.fps},split[bg0][fg0];"
+            f"[bg0]scale={W // 4}:{H // 4}:force_original_aspect_ratio=increase,crop={W // 4}:{H // 4},"
+            f"boxblur=8:2,scale={W}:{H},eq=brightness=-0.12[bg];"
+            f"[fg0]scale={W}:{H}:force_original_aspect_ratio=decrease[fg];"
+            f"[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1,ass={ass_name}{out_label}"
+        )
+    return (f"{src_label}fps={cfg.fps},scale=1920:1080:force_original_aspect_ratio=decrease,"
+            f"pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,ass={ass_name}{out_label}")
+
+
 def build_ffmpeg_cmd(src: str, out: str, ass_name: str, ranges: list[Range], has_audio: bool,
                      src_w: int, src_h: int, cfg: Config, measured: dict | None = None) -> list[str]:
     seek, span = _seek_window(ranges)
@@ -130,18 +144,7 @@ def build_ffmpeg_cmd(src: str, out: str, ass_name: str, ranges: list[Range], has
     else:
         f.append("".join(vlabels) + f"concat=n={n}:v=1:a=0[vc]")
 
-    W, H = cfg.width, cfg.height
-    if cfg.vertical:
-        f.append(
-            f"[vc]fps={cfg.fps},split[bg0][fg0];"
-            f"[bg0]scale={W // 4}:{H // 4}:force_original_aspect_ratio=increase,crop={W // 4}:{H // 4},"
-            f"boxblur=8:2,scale={W}:{H},eq=brightness=-0.12[bg];"
-            f"[fg0]scale={W}:{H}:force_original_aspect_ratio=decrease[fg];"
-            f"[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1,ass={ass_name}[vout]"
-        )
-    else:
-        f.append(f"[vc]fps={cfg.fps},scale=1920:1080:force_original_aspect_ratio=decrease,"
-                 f"pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,ass={ass_name}[vout]")
+    f.append(_frame_filter(cfg, ass_name, "[vc]"))
     if has_audio:
         f.append(f"[ac]{loudnorm_filter(cfg, measured)},aresample=48000[aout]")
 
@@ -173,7 +176,8 @@ def render(src: str | Path, clip: Clip, segs: list[Segment], silences: list[Rang
     events = subtitle_events(ranges, window_segs, cfg)
     total = sum(b - a for a, b in ranges)
     ratio = (info["height"] / info["width"]) if info.get("width") else 9 / 16
-    ass = build_ass(events, clip.title, total, clip.keywords, cfg, video_h_ratio=min(ratio, 16 / 9))
+    ass = build_ass(events, clip.title, total, clip.keywords, cfg, video_h_ratio=min(ratio, 16 / 9),
+                    hook_text=clip.hook_text)
     ass_name = f"{name}.ass"
     (out_dir / ass_name).write_text(ass, encoding="utf-8")
 
@@ -184,4 +188,38 @@ def render(src: str | Path, clip: Clip, segs: list[Segment], silences: list[Rang
     r = subprocess.run(cmd, cwd=out_dir, capture_output=True, text=True)
     if r.returncode != 0:
         raise RuntimeError(f"ffmpeg 失敗 ({name}):\n{r.stderr[-2000:]}")
+    return out
+
+
+def render_thumbnail(src: str | Path, clip: Clip, info: dict, out_dir: str | Path, name: str, cfg: Config) -> Path:
+    """山場のフレーム＋大きなタイトルでサムネイルを作る。"""
+    out_dir = Path(out_dir)
+    W, H = (cfg.width, cfg.height) if cfg.vertical else (1920, 1080)
+    fs = int((cfg.font_size if cfg.vertical else 64) * 1.7)
+    title = clip.title or clip.hook_text
+    from .subtitles import escape, wrap
+    text = r"\N".join(escape(x) for x in wrap(title, 8 if cfg.vertical else 12))
+    ass = f"""[Script Info]
+ScriptType: v4.00+
+PlayResX: {W}
+PlayResY: {H}
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Thumb,{cfg.font},{fs},&H0000F0FF,&H000000FF,&H00000000,&H90000000,-1,0,0,0,100,100,0,0,1,{fs // 9},6,2,40,40,{int(H * 0.12)},1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:10.00,Thumb,,0,0,0,,{text}
+"""
+    ass_name = f"{name}_thumb.ass"
+    (out_dir / ass_name).write_text(ass, encoding="utf-8")
+    out = out_dir / f"{name}.jpg"
+    t = max(0.0, min(clip.peak, (info.get("duration") or clip.peak + 1) - 0.1))
+    cmd = ["ffmpeg", "-y", "-v", "error", "-ss", f"{t:.3f}", "-i", str(Path(src).resolve()),
+           "-filter_complex", _frame_filter(cfg, ass_name), "-map", "[vout]", "-frames:v", "1", "-q:v", "3", out.name]
+    r = subprocess.run(cmd, cwd=out_dir, capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"サムネイル生成失敗 ({name}):\n{r.stderr[-1500:]}")
     return out

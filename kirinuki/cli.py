@@ -14,7 +14,7 @@ def main(argv: list[str] | None = None) -> int:
 
     for name, help_ in (("run", "見どころを検出して書き出す"), ("analyze", "検出のみ（書き出さない）")):
         q = sub.add_parser(name, help=help_)
-        q.add_argument("video")
+        q.add_argument("video", help="動画ファイル または YouTube等のURL（yt-dlp が必要）")
         q.add_argument("-o", "--out", default="out")
         q.add_argument("-t", "--transcript", help=".srt / .vtt / .json（省略時は faster-whisper）")
         q.add_argument("-c", "--chat", help="チャットログ (yt-dlp live_chat.json / JSON / CSV)")
@@ -30,6 +30,7 @@ def main(argv: list[str] | None = None) -> int:
         q.add_argument("--font", default="IPAGothic")
         q.add_argument("--whisper-model", default="large-v3")
         q.add_argument("--language", default="ja")
+        q.add_argument("--no-thumbnail", action="store_true")
         q.add_argument("-v", "--verbose", action="store_true")
 
     a = p.parse_args(argv)
@@ -39,7 +40,7 @@ def main(argv: list[str] | None = None) -> int:
         target_duration=a.target_duration, use_llm=not a.no_llm, model=a.model,
         vertical=not a.horizontal, teaser=a.teaser, font=a.font, min_relative_score=a.min_relative,
     )
-    res = run(a.video, a.out, cfg, transcript=a.transcript, chat=a.chat, render_clips=a.cmd == "run",
+    res = run(a.video, a.out, cfg, transcript=a.transcript, chat=a.chat, render_clips=a.cmd == "run", thumbnails=not a.no_thumbnail,
               whisper_model=a.whisper_model, language=a.language or None)
     for i, c in enumerate(res.clips, 1):
         print(f"#{i} {c.start:8.1f}s - {c.end:8.1f}s ({c.duration:4.1f}s) score={c.score:.3f} {c.title}")
