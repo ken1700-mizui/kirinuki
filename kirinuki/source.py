@@ -22,21 +22,34 @@ def is_url(s: str) -> bool:
     return s.startswith(("http://", "https://"))
 
 
-def ytdlp_cmd(url: str, dest: Path, sub_lang: str = "ja") -> list[str]:
+def _auth(cookies: str | None, cookies_from_browser: str | None) -> list[str]:
+    """自分のアカウントでの認証（ボット判定を避けるための正規の方法）。"""
+    if cookies:
+        return ["--cookies", cookies]
+    if cookies_from_browser:
+        return ["--cookies-from-browser", cookies_from_browser]
+    return []
+
+
+def ytdlp_cmd(url: str, dest: Path, sub_lang: str = "ja", cookies: str | None = None,
+              cookies_from_browser: str | None = None) -> list[str]:
     return [
-        "yt-dlp", url,
+        "yt-dlp", url, *_auth(cookies, cookies_from_browser),
         "-f", "bv*[height<=1080]+ba/b[height<=1080]/b",
         "--merge-output-format", "mp4",
-        "--write-subs", "--sub-langs", f"live_chat,{sub_lang}", "--sub-format", "json/vtt/srt/best",
+        # 手動字幕 → 無ければ自動字幕(json3 は単語ごとの時刻つき) + ライブチャット
+        "--write-subs", "--write-auto-subs", "--sub-langs", f"live_chat,{sub_lang},{sub_lang}-orig",
+        "--sub-format", "json3/json/vtt/srt/best",
         "-o", str(dest / "source.%(ext)s"),
         "--write-info-json",
         "--no-playlist",
     ]
 
 
-def ytdlp_ref_cmd(url: str, dest: Path) -> list[str]:
+def ytdlp_ref_cmd(url: str, dest: Path, cookies: str | None = None,
+                  cookies_from_browser: str | None = None) -> list[str]:
     """参照用（伸びている切り抜き）: 動画＋メタデータ(再生数・タイトル)。"""
-    return ["yt-dlp", url, "-f", "bv*[height<=720]+ba/b", "--merge-output-format", "mp4",
+    return ["yt-dlp", url, *_auth(cookies, cookies_from_browser), "-f", "bv*[height<=720]+ba/b", "--merge-output-format", "mp4",
             "--write-info-json", "-o", str(dest / "%(id)s.%(ext)s"), "--no-playlist"]
 
 
@@ -45,19 +58,22 @@ def find_outputs(dest: Path) -> Source:
     if video is None:
         raise RuntimeError("yt-dlp の出力動画が見つかりません")
     chat = next(iter(sorted(dest.glob("source*.live_chat.json"))), None)
-    subs = next((p for p in sorted(dest.glob("source*.vtt")) if "live_chat" not in p.name), None)
+    subs = next(iter(sorted(dest.glob("source*.json3"))), None)
+    if subs is None:
+        subs = next((p for p in sorted(dest.glob("source*.vtt")) if "live_chat" not in p.name), None)
     if subs is None:
         subs = next(iter(sorted(dest.glob("source*.srt"))), None)
     info = next(iter(sorted(dest.glob("source.info.json"))), None)
     return Source(video, chat, subs, info)
 
 
-def download(url: str, dest: str | Path, sub_lang: str = "ja") -> Source:
+def download(url: str, dest: str | Path, sub_lang: str = "ja", cookies: str | None = None,
+             cookies_from_browser: str | None = None) -> Source:
     if shutil.which("yt-dlp") is None:
         raise RuntimeError("yt-dlp が必要です: pip install yt-dlp")
     dest = Path(dest)
     dest.mkdir(parents=True, exist_ok=True)
-    r = subprocess.run(ytdlp_cmd(url, dest, sub_lang), capture_output=True, text=True)
+    r = subprocess.run(ytdlp_cmd(url, dest, sub_lang, cookies, cookies_from_browser), capture_output=True, text=True)
     if r.returncode != 0:
         # ライブチャットが無いだけなら動画は取れている
         try:
@@ -67,14 +83,15 @@ def download(url: str, dest: str | Path, sub_lang: str = "ja") -> Source:
     return find_outputs(dest)
 
 
-def download_refs(urls: list[str], dest: str | Path) -> list[Path]:
+def download_refs(urls: list[str], dest: str | Path, cookies: str | None = None,
+                  cookies_from_browser: str | None = None) -> list[Path]:
     if shutil.which("yt-dlp") is None:
         raise RuntimeError("yt-dlp が必要です: pip install yt-dlp")
     dest = Path(dest)
     dest.mkdir(parents=True, exist_ok=True)
     out = []
     for u in urls:
-        subprocess.run(ytdlp_ref_cmd(u, dest), capture_output=True, text=True)
+        subprocess.run(ytdlp_ref_cmd(u, dest, cookies, cookies_from_browser), capture_output=True, text=True)
     for p in sorted(dest.glob("*.mp4")):
         out.append(p)
     return out

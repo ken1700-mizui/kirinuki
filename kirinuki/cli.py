@@ -36,6 +36,12 @@ def _add_run_args(q: argparse.ArgumentParser) -> None:
     q.add_argument("--whisper-model", default="large-v3")
     q.add_argument("--language", default="ja")
     q.add_argument("--no-thumbnail", action="store_true")
+    _add_auth_args(q)
+
+
+def _add_auth_args(q: argparse.ArgumentParser) -> None:
+    q.add_argument("--cookies", help="yt-dlp 用の cookies.txt（自分のアカウント）")
+    q.add_argument("--cookies-from-browser", help="例: chrome / firefox（手元PCで実行する場合）")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -64,6 +70,7 @@ def main(argv: list[str] | None = None) -> int:
     q = sub.add_parser("refs", help="伸びている切り抜きを取得（動画＋再生数などのメタデータ）")
     q.add_argument("urls", nargs="+")
     q.add_argument("-o", "--out", default="refs")
+    _add_auth_args(q)
 
     a = p.parse_args(argv)
     logging.basicConfig(level=logging.INFO if a.verbose else logging.WARNING, format="%(levelname)s %(message)s")
@@ -77,6 +84,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         res = run(a.video, a.out, cfg, transcript=a.transcript, chat=a.chat, render_clips=a.cmd == "run",
                   thumbnails=not a.no_thumbnail, profile=a.profile,
+                  cookies=a.cookies, cookies_from_browser=a.cookies_from_browser,
                   whisper_model=a.whisper_model, language=a.language or None)
         for i, c in enumerate(res.clips, 1):
             print(f"#{i} {c.start:8.1f}s - {c.end:8.1f}s ({c.duration:4.1f}s) score={c.score:.3f} {c.title}")
@@ -100,6 +108,6 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(score(rep["clips"], truth), ensure_ascii=False, indent=2))
     elif a.cmd == "refs":
         from .source import download_refs
-        for f in download_refs(a.urls, a.out):
+        for f in download_refs(a.urls, a.out, a.cookies, a.cookies_from_browser):
             print(f)
     return 0

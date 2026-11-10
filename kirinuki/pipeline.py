@@ -80,12 +80,13 @@ def analyze(video: str | Path, cfg: Config, transcript: str | Path | None = None
 
 def run(video: str | Path, out_dir: str | Path, cfg: Config, transcript: str | Path | None = None,
         render_clips: bool = True, chat: str | Path | None = None, thumbnails: bool = True,
-        profile: str | None = None, **kw) -> Analysis:
+        profile: str | None = None, cookies: str | None = None,
+        cookies_from_browser: str | None = None, **kw) -> Analysis:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     prof = profiles.get(profile)
     if isinstance(video, str) and is_url(video):
-        src = download(video, out_dir / "source")
+        src = download(video, out_dir / "source", cookies=cookies, cookies_from_browser=cookies_from_browser)
         log.info("取得: %s (chat=%s, subs=%s)", src.video, src.chat, src.subtitles)
         video, chat = src.video, chat or src.chat
         # 配信者が付けた字幕は Whisper より正確なことが多い

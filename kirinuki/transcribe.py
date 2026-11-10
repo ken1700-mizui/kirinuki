@@ -54,6 +54,42 @@ def load_json(path: str | Path) -> list[Segment]:
     return normalize(segs)
 
 
+def load_json3(path: str | Path) -> list[Segment]:
+    """YouTube の字幕 json3 形式（自動字幕は単語ごとの時刻 tOffsetMs を持つ）。"""
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    segs: list[Segment] = []
+    for ev in data.get("events", []):
+        parts = ev.get("segs")
+        if not parts or "tStartMs" not in ev:
+            continue
+        t0 = ev["tStartMs"] / 1000
+        dur = ev.get("dDurationMs", 0) / 1000
+        texts = [(t0 + p.get("tOffsetMs", 0) / 1000, p.get("utf8", "")) for p in parts]
+        text = "".join(t for _, t in texts).replace("\n", " ").strip()
+        if not text:
+            continue
+        words = []
+        for i, (ws, wt) in enumerate(texts):
+            we = texts[i + 1][0] if i + 1 < len(texts) else t0 + dur
+            if wt.strip():
+                words.append(Word(ws, max(we, ws + 0.05), wt))
+        segs.append(Segment(t0, t0 + dur if dur else (words[-1].end if words else t0 + 1), text, words))
+    return normalize(_merge_short(segs))
+
+
+def _merge_short(segs: list[Segment], max_gap: float = 0.3, max_len: float = 8.0) -> list[Segment]:
+    """自動字幕は細切れなので、間が短いものを文っぽい長さにまとめる。"""
+    out: list[Segment] = []
+    for s in segs:
+        if out and s.start - out[-1].end <= max_gap and s.end - out[-1].start <= max_len \
+                and not out[-1].text.endswith(("。", "？", "！", "?", "!")):
+            o = out[-1]
+            out[-1] = Segment(o.start, max(o.end, s.end), o.text + s.text, o.words + s.words)
+        else:
+            out.append(s)
+    return out
+
+
 def save_json(segs: list[Segment], path: str | Path) -> None:
     out = {
         "segments": [
@@ -73,6 +109,8 @@ def load_transcript(path: str | Path) -> list[Segment]:
     p = Path(path)
     if p.suffix.lower() in (".srt", ".vtt"):
         return load_srt(p)
+    if p.suffix.lower() == ".json3":
+        return load_json3(p)
     if p.suffix.lower() == ".json":
         return load_json(p)
     raise ValueError(f"未対応の文字起こし形式: {p.suffix}（.srt / .vtt / .json）")

@@ -292,3 +292,18 @@ def test_score_recall_and_missed():
     r = score(pred, truth)
     assert r["recall@1"] == 0.5 and r["view_recall@1"] == 0.9 and r["precision"] == 0.5
     assert r["missed"][0]["start"] == 500
+
+
+def test_load_json3_autosub(tmp_path):
+    from kirinuki.transcribe import load_transcript
+    data = {"events": [
+        {"tStartMs": 1000, "dDurationMs": 1500, "segs": [{"utf8": "ちょっと"}, {"utf8": "待って", "tOffsetMs": 600}]},
+        {"tStartMs": 2600, "dDurationMs": 1000, "segs": [{"utf8": "やばい"}]},
+        {"tStartMs": 3000, "segs": [{"utf8": "\n"}]},
+        {"tStartMs": 9000, "dDurationMs": 1000, "segs": [{"utf8": "次の話"}]},
+    ]}
+    p = tmp_path / "a.ja.json3"
+    p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    segs = load_transcript(p)
+    assert [s.text for s in segs] == ["ちょっと待ってやばい", "次の話"]
+    assert segs[0].words[1].start == pytest.approx(1.6) and segs[0].start == 1.0
