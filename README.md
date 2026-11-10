@@ -13,6 +13,7 @@
 1. [切り抜きの基礎](docs/01_切り抜きの基礎.md) — 何が必要で、どんな手順で、どう編集するか
 2. [AI化の設計](docs/02_AI化の設計.md) — 調査結果とアルゴリズム
 3. [レビューと改善ログ](docs/03_レビューと改善ログ.md) — 5回の改善の記録と今後の課題
+4. [評価ループ](docs/04_評価ループ.md) — のりプロで精度を上げ、ホロライブで本番に移る手順
 
 ## 必要なもの
 
@@ -39,6 +40,15 @@ python -m kirinuki run "https://www.youtube.com/watch?v=..." -o out/
 
 # 検出だけ（書き出さない）
 python -m kirinuki analyze 配信.mp4 -t 配信.srt
+
+# 事務所の規約チェック（禁止チャンネル・メン限・誇張タイトル）と概要欄の自動生成
+python -m kirinuki run "<URL>" -p noripro
+
+# 評価ループ（詳細は docs/04）
+python -m kirinuki refs <伸びている切り抜きURL...> -o refs/
+python -m kirinuki truth 元配信.mp4 refs/*.mp4 -o truth.json
+python -m kirinuki eval out/report.json truth.json
+python -m kirinuki review out/clip_01.mp4 --ref refs/*.mp4
 ```
 
 Claude 再ランクは `ANTHROPIC_API_KEY` を設定すると自動で有効になります（`--no-llm` で無効）。
@@ -58,7 +68,8 @@ Claude 再ランクは `ANTHROPIC_API_KEY` を設定すると自動で有効に�
 
 - `clip_XX.mp4` — 1080x1920, H.264/AAC, -14 LUFS
 - `clip_XX.jpg` — サムネイル
-- `report.md` / `report.json` — 区間・スコア・タイトル・理由・投稿前チェックリスト
+- `clip_XX.txt` — 概要欄（元配信URL・タイムスタンプ・クレジット）
+- `report.md` / `report.json` — 区間・スコア・タイトル・理由・規約の注意・投稿前チェックリスト
 
 ## テスト
 

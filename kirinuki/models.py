@@ -40,6 +40,7 @@ class Clip:
     reason: str = ""
     llm_scores: Optional[dict] = None
     teaser: Optional[tuple[float, float]] = None
+    warnings: list[str] = field(default_factory=list)
 
     @property
     def duration(self) -> float:

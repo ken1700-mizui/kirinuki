@@ -35,10 +35,18 @@ CHAT_ONLY = (150.0, 160.0)   # 声は普通だがチャットが沸く区間（�
 
 
 def _speech(n: int, rng: np.random.Generator, amp: float) -> np.ndarray:
-    """音声っぽい信号: 帯域の広いノイズ×音節の包絡。"""
+    """音声っぽい信号: 不規則な長さ・強さの音節が並ぶ（実際の声と同じく周期的でない）。"""
+    env = np.zeros(n)
+    i = 0
+    while i < n:
+        syl = int(SR * rng.uniform(0.08, 0.28))
+        gap = int(SR * rng.uniform(0.0, 0.12))
+        a = rng.uniform(0.3, 1.0)
+        seg = np.hanning(max(syl, 2)) * a
+        env[i:i + syl] = seg[: max(0, min(syl, n - i))]
+        i += syl + gap
     t = np.arange(n) / SR
-    env = 0.55 + 0.45 * np.sin(2 * np.pi * 4.0 * t) ** 2
-    carrier = 0.6 * np.sin(2 * np.pi * 180 * t) + 0.4 * rng.standard_normal(n)
+    carrier = 0.6 * np.sin(2 * np.pi * rng.uniform(150, 220) * t) + 0.4 * rng.standard_normal(n)
     return amp * env * carrier
 
 

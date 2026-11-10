@@ -258,3 +258,37 @@ def test_wrap_never_drops_text():
         lines = wrap(t, 14)
         assert "".join(lines).replace(" ", "") == t.replace(" ", "")
         assert all(len(x) <= 14 for x in lines)
+
+
+# ---------- profiles ----------
+def test_profiles_rules():
+    from kirinuki import profiles
+    p = profiles.get("noripro")
+    err, _ = profiles.check_source(p, {"channel": "犬山たまき / 佃煮のりお", "title": "雑談"})
+    assert err
+    err, warn = profiles.check_source(p, {"channel": "レグルシュ・ライオンハート", "title": "【歌枠】耐久"})
+    assert not err and warn
+    err, _ = profiles.check_source(profiles.get("hololive"), {"channel": "x", "title": "【メン限】雑談"})
+    assert err
+    assert profiles.check_title("【放送事故】ブチギレ") and not profiles.check_title("油断した瞬間に完全敗北")
+    c = Clip(125, 150, 130, title="タイトル")
+    d = profiles.make_description(profiles.get("hololive"), {"title": "元配信", "webpage_url": "https://youtu.be/x",
+                                                              "channel": "ch"}, c)
+    assert d.startswith("【元配信】元配信\nhttps://youtu.be/x") and "https://youtu.be/x?t=125s" in d
+
+
+# ---------- locate / evaluate ----------
+def test_consistent_chain_rejects_outliers():
+    from kirinuki.locate import _consistent_chain
+    hits = [(0, 100, .9), (1, 101, .9), (2, 50, .95), (3, 103, .9), (4, 110, .9)]  # 2秒目は誤一致、4秒目はジャンプカット
+    chain = _consistent_chain(hits, max_jump=60)
+    assert [h[1] for h in chain] == [100, 101, 103, 110]
+
+
+def test_score_recall_and_missed():
+    from kirinuki.evaluate import score
+    truth = [{"start": 100, "end": 130, "views": 9000}, {"start": 500, "end": 520, "views": 1000}]
+    pred = [{"start": 98, "end": 128}, {"start": 300, "end": 330}]
+    r = score(pred, truth)
+    assert r["recall@1"] == 0.5 and r["view_recall@1"] == 0.9 and r["precision"] == 0.5
+    assert r["missed"][0]["start"] == 500

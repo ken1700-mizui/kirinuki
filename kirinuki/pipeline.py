@@ -13,7 +13,8 @@ from .config import Config
 from .edit import plan_teaser, render, render_thumbnail
 from .highlight import Timeline, build_timeline, generate_candidates, select
 from .models import Clip, Segment
-from .source import download, is_url
+from . import profiles
+from .source import download, is_url, load_info
 from .text import reaction_words
 from .transcribe import load_transcript, save_json, transcribe_whisper
 
@@ -27,6 +28,7 @@ class Analysis:
     timeline: Timeline
     clips: list[Clip]
     used_llm: bool
+    rule_warnings: list[str] | None = None
 
 
 def auto_title(clip: Clip, segs: list[Segment]) -> str:
@@ -77,31 +79,45 @@ def analyze(video: str | Path, cfg: Config, transcript: str | Path | None = None
 
 
 def run(video: str | Path, out_dir: str | Path, cfg: Config, transcript: str | Path | None = None,
-        render_clips: bool = True, chat: str | Path | None = None, thumbnails: bool = True, **kw) -> Analysis:
+        render_clips: bool = True, chat: str | Path | None = None, thumbnails: bool = True,
+        profile: str | None = None, **kw) -> Analysis:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    prof = profiles.get(profile)
     if isinstance(video, str) and is_url(video):
         src = download(video, out_dir / "source")
         log.info("取得: %s (chat=%s, subs=%s)", src.video, src.chat, src.subtitles)
         video, chat = src.video, chat or src.chat
         # 配信者が付けた字幕は Whisper より正確なことが多い
         transcript = transcript or src.subtitles
+    info = load_info(video)
+
+    rule_warnings: list[str] = []
+    if prof:
+        errors, rule_warnings = profiles.check_source(prof, info)
+        if errors:
+            raise RuntimeError(f"{prof.name}の規約上、この配信は切り抜けません:\n- " + "\n- ".join(errors))
+
     a = analyze(video, cfg, transcript, chat=chat, **kw)
+    a.rule_warnings = rule_warnings
     if a.segs and not transcript:
         save_json(a.segs, out_dir / "transcript.json")
 
     files: list[dict] = []
-    if render_clips:
-        for i, c in enumerate(a.clips, 1):
-            name = f"clip_{i:02d}"
-            entry = {"video": str(render(video, c, a.segs, a.timeline.silences, a.info, out_dir, name, cfg))}
-            if thumbnails and a.info["has_video"]:
-                try:
-                    entry["thumbnail"] = str(render_thumbnail(video, c, a.info, out_dir, name, cfg))
-                except RuntimeError as e:
-                    log.warning("%s", e)
-            files.append(entry)
-    write_report(a, out_dir, files, str(video))
+    for i, c in enumerate(a.clips, 1):
+        name = f"clip_{i:02d}"
+        c.warnings = profiles.check_title(c.title)
+        (out_dir / f"{name}.txt").write_text(profiles.make_description(prof, info, c), encoding="utf-8")
+        if not render_clips:
+            continue
+        entry = {"video": str(render(video, c, a.segs, a.timeline.silences, a.info, out_dir, name, cfg))}
+        if thumbnails and a.info["has_video"]:
+            try:
+                entry["thumbnail"] = str(render_thumbnail(video, c, a.info, out_dir, name, cfg))
+            except RuntimeError as e:
+                log.warning("%s", e)
+        files.append(entry)
+    write_report(a, out_dir, files, str(video), prof)
     return a
 
 
@@ -111,11 +127,14 @@ def _fmt(t: float) -> str:
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
 
-def write_report(a: Analysis, out_dir: Path, files: list[dict], src: str) -> None:
+def write_report(a: Analysis, out_dir: Path, files: list[dict], src: str,
+                 prof: "profiles.Profile | None" = None) -> None:
     data = {
         "source": src,
         "duration": a.info["duration"],
         "used_llm": a.used_llm,
+        "profile": prof.key if prof else None,
+        "rule_warnings": a.rule_warnings or [],
         "clips": [dict(c.to_dict(), file=(files[i] if i < len(files) else {}).get("video"),
                        thumbnail=(files[i] if i < len(files) else {}).get("thumbnail"))
                   for i, c in enumerate(a.clips)],
@@ -131,6 +150,11 @@ def write_report(a: Analysis, out_dir: Path, files: list[dict], src: str) -> Non
         teaser = f"{_fmt(c.teaser[0])}〜" if c.teaser else "-"
         md.append(f"| {i} | {_fmt(c.start)}〜{_fmt(c.end)} | {c.duration:.0f}s | {c.score:.3f} | "
                   f"{esc(c.title)} | {esc(c.hook_text)} | {teaser} | {esc(c.reason)} |")
+    warns = list(a.rule_warnings or []) + [f"#{i} {w}" for i, c in enumerate(a.clips, 1) for w in c.warnings]
+    if warns:
+        md += ["", "## ⚠️ 規約・表現の注意"] + [f"- {w}" for w in warns]
+    if prof:
+        md += ["", f"## {prof.name}のルール（{prof.guideline_url}）"] + [f"- {n}" for n in prof.notes]
     md += ["", "## 投稿前チェックリスト",
            "- [ ] 配信者の切り抜きガイドライン（許可・収益化・クレジット表記）を確認した",
            "- [ ] 概要欄に元動画URLと配信者名を記載した",

@@ -88,3 +88,28 @@ def test_chat_finds_visual_only_moment(tricky):
     assert not any(_hits(c, DECOY, 0.5) for c in a.clips)
     # 各クリップの主役は自分のピーク（他の山を取り込まない）
     assert all(c.start <= c.peak <= c.end for c in a.clips)
+
+
+def test_truth_locate_and_review(tricky, tmp_path):
+    from kirinuki.evaluate import build_truth, score
+    from kirinuki.review import review
+    video, srt, chat = tricky
+    # 「人間の切り抜き」を模擬: 山場をジャンプカット＋音量変更＋ノイズ
+    ref = tmp_path / "ref.mp4"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(video), "-filter_complex",
+                    "[0:v]trim=118:126,setpts=PTS-STARTPTS[v1];[0:a]atrim=118:126,asetpts=PTS-STARTPTS[a1];"
+                    "[0:v]trim=127:136,setpts=PTS-STARTPTS[v2];[0:a]atrim=127:136,asetpts=PTS-STARTPTS[a2];"
+                    "[v1][a1][v2][a2]concat=n=2:v=1:a=1[v][a0];[a0]volume=-5dB[a]",
+                    "-map", "[v]", "-map", "[a]", str(ref)], check=True)
+    truth = build_truth(video, [ref])
+    assert truth[0]["found"] and abs(truth[0]["start"] - 118) < 1 and abs(truth[0]["end"] - 136) < 1.5
+
+    a = run(video, tmp_path / "out", Config(use_llm=False, num_clips=2), transcript=srt, chat=chat,
+            profile="noripro")
+    rep = json.loads((tmp_path / "out" / "report.json").read_text())
+    assert score(rep["clips"], truth)["recall@1"] == 1.0
+    assert "元配信" in (tmp_path / "out" / "clip_01.txt").read_text()
+
+    md = review(tmp_path / "out" / "clip_01.mp4", [ref], tmp_path / "rv")
+    assert md.exists() and (tmp_path / "rv" / "clip_01_sheet.jpg").exists()
+    assert "冒頭3秒の勢い" in md.read_text()
