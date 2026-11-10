@@ -21,7 +21,7 @@ def main(argv: list[str] | None = None) -> int:
         q.add_argument("-n", "--num", type=int, default=5, help="クリップ数")
         q.add_argument("--min", type=float, default=15.0, dest="min_duration")
         q.add_argument("--max", type=float, default=60.0, dest="max_duration")
-        q.add_argument("--target", type=float, default=35.0, dest="target_duration")
+        q.add_argument("--target", type=float, default=30.0, dest="target_duration")
         q.add_argument("--min-relative", type=float, default=0.5, help="1位の何割未満のクリップは出さない")
         q.add_argument("--no-llm", action="store_true", help="Claude を使わない")
         q.add_argument("--model", default="claude-opus-5-5")

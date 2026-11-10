@@ -56,3 +56,35 @@ def test_render_vertical(stream, tmp_path):
                        capture_output=True, text=True)
     lufs = float(r.stderr.split("Summary:")[1].split("I:")[1].split("LUFS")[0])
     assert abs(lufs + 14) < 1.5
+
+
+@pytest.fixture(scope="module")
+def tricky(tmp_path_factory):
+    from fixtures import make_chat
+    d = tmp_path_factory.mktemp("tricky")
+    video, srt, _ = make_stream(d, decoy=True)
+    return video, srt, make_chat(d / "x.live_chat.json")
+
+
+def _hits(clip, span, ratio=0.6):
+    inter = min(clip.end, span[1]) - max(clip.start, span[0])
+    return inter / (span[1] - span[0]) >= ratio
+
+
+def test_ignores_loud_bgm_decoy(tricky):
+    from fixtures import DECOY
+    video, srt, _ = tricky
+    a = analyze(video, Config(use_llm=False, num_clips=5), transcript=srt)
+    assert _hits(a.clips[0], (HIGHLIGHT_START, HIGHLIGHT_END))
+    assert not any(_hits(c, DECOY, 0.5) for c in a.clips), [(c.start, c.end) for c in a.clips]
+
+
+def test_chat_finds_visual_only_moment(tricky):
+    from fixtures import CHAT_ONLY, DECOY
+    video, srt, chat = tricky
+    a = analyze(video, Config(use_llm=False, num_clips=5), transcript=srt, chat=chat)
+    assert _hits(a.clips[0], (HIGHLIGHT_START, HIGHLIGHT_END))
+    assert any(_hits(c, CHAT_ONLY, 0.8) for c in a.clips[:2])
+    assert not any(_hits(c, DECOY, 0.5) for c in a.clips)
+    # 各クリップの主役は自分のピーク（他の山を取り込まない）
+    assert all(c.start <= c.peak <= c.end for c in a.clips)

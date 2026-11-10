@@ -17,7 +17,6 @@ from pathlib import Path
 
 import numpy as np
 
-from .audio import local_jump
 from .text import reaction_score
 
 Message = tuple[float, str]
@@ -72,8 +71,19 @@ def load_chat(path: str | Path) -> list[Message]:
     return sorted(msgs)
 
 
-def chat_signal(msgs: list[Message], n_sec: int, delay: float = 5.0) -> np.ndarray:
-    """1秒ごとのチャット盛り上がり度 (0〜1)。コメント量の跳ね × 反応語の濃さ。"""
+def _rolling_quantile(x: np.ndarray, window: int, q: float) -> np.ndarray:
+    n, half = len(x), window // 2
+    return np.array([np.percentile(x[max(0, t - half):min(n, t + half + 1)], q) for t in range(n)])
+
+
+def chat_signal(msgs: list[Message], n_sec: int, delay: float = 5.0, window: int = 300,
+                full_ratio: float = 8.0) -> np.ndarray:
+    """1秒ごとのチャット盛り上がり度 (0〜1)。
+
+    - 量: 「普段(前後 window 秒の40%点)の何倍の速さでコメントが流れているか」。full_ratio 倍で満点。
+      盛り上がりが多い配信でも基準が引っ張られにくいよう、中央値ではなく低めの分位点を基準にする。
+    - 質: 反応語（草・w・えぐい 等）を含むコメントの割合。
+    """
     if not msgs or n_sec <= 0:
         return np.zeros(max(n_sec, 0))
     count = np.zeros(n_sec)
@@ -82,11 +92,12 @@ def chat_signal(msgs: list[Message], n_sec: int, delay: float = 5.0) -> np.ndarr
         i = int(math.floor(t - delay))
         if 0 <= i < n_sec:
             count[i] += 1
-            react[i] += reaction_score(text)
-    # 3秒窓で平滑化（反応のばらつきを吸収）
+            react[i] += min(1.0, reaction_score(text) * 2.5)  # 「草」1語でも立派な反応
     k = np.ones(3) / 3
     count_s = np.convolve(count, k, mode="same")
     react_s = np.convolve(react, k, mode="same")
-    rate = local_jump(np.log1p(count_s), window=120, min_spread=0.25, ignore_below=None)
-    density = np.where(count_s > 0, react_s / np.maximum(count_s, 1e-6), 0.0)
-    return np.clip(0.6 * rate + 0.4 * density * (rate > 0), 0.0, 1.0)
+    base = _rolling_quantile(count_s, window, 40)
+    ratio = (count_s + 0.5) / (base + 0.5)
+    rate = np.clip(np.log2(np.maximum(ratio, 1.0)) / math.log2(full_ratio), 0.0, 1.0)
+    quality = np.where(count_s > 0, react_s / np.maximum(count_s, 1e-6), 0.0)
+    return np.clip(rate * (0.6 + 0.4 * quality), 0.0, 1.0)

@@ -30,6 +30,8 @@ HIGHLIGHT = [
 HIGHLIGHT_START = 118.0
 HIGHLIGHT_END = 134.0
 LONG_SILENCE = (60.0, 61.5)  # ジャンプカット検証用
+DECOY = (25.0, 42.0)         # 大音量BGMだけの区間（面白くない）
+CHAT_ONLY = (150.0, 160.0)   # 声は普通だがチャットが沸く区間（画面上の出来事）
 
 
 def _speech(n: int, rng: np.random.Generator, amp: float) -> np.ndarray:
@@ -40,7 +42,8 @@ def _speech(n: int, rng: np.random.Generator, amp: float) -> np.ndarray:
     return amp * env * carrier
 
 
-def make_stream(dirpath: Path, duration: float = 180.0) -> tuple[Path, Path, list[tuple[float, float, str]]]:
+def make_stream(dirpath: Path, duration: float = 180.0, decoy: bool = False
+                ) -> tuple[Path, Path, list[tuple[float, float, str]]]:
     rng = np.random.default_rng(0)
     dirpath.mkdir(parents=True, exist_ok=True)
     audio = 0.002 * rng.standard_normal(int(duration * SR))  # 環境ノイズ
@@ -65,6 +68,12 @@ def make_stream(dirpath: Path, duration: float = 180.0) -> tuple[Path, Path, lis
             audio[a:b] += _speech(b - a, rng, amp)
             segs.append((round(t, 2), round(t + dur, 2), text))
         t = nxt
+
+    if decoy:  # 大音量の音楽（和音）を重ねる。話し声は普通のまま
+        a, b = int(DECOY[0] * SR), int(DECOY[1] * SR)
+        tt = np.arange(b - a) / SR
+        music = sum(np.sin(2 * np.pi * f * tt) for f in (220, 277, 330, 440)) / 4
+        audio[a:b] += 0.6 * music * (0.7 + 0.3 * np.sin(2 * np.pi * 2 * tt))
 
     wav = dirpath / "audio.wav"
     pcm = (np.clip(audio, -1, 1) * 32767).astype(np.int16)
@@ -92,3 +101,20 @@ def make_stream(dirpath: Path, duration: float = 180.0) -> tuple[Path, Path, lis
     srt.write_text("\n".join(f"{i}\n{ts(a)} --> {ts(b)}\n{txt}\n" for i, (a, b, txt) in enumerate(segs, 1)),
                    encoding="utf-8")
     return video, srt, segs
+
+
+def make_chat(path: Path, duration: float = 180.0) -> Path:
+    """ライブチャット (yt-dlp 形式)。HIGHLIGHT と CHAT_ONLY で沸き、他は平常。"""
+    import json
+    rng = np.random.default_rng(1)
+    lines = []
+    for t in np.arange(0, duration, 0.5):
+        hot = (HIGHLIGHT_START + 3 <= t < HIGHLIGHT_END + 6) or (CHAT_ONLY[0] + 4 <= t < CHAT_ONLY[1] + 4)
+        n = rng.poisson(4.0 if hot else 0.4)
+        for _ in range(n):
+            text = rng.choice(["草", "www", "えぐい！", "やばすぎ"] if hot else ["こんばんは", "初見です", "88888", "かわいい"])
+            lines.append(json.dumps({"replayChatItemAction": {"videoOffsetTimeMsec": str(int(t * 1000)), "actions": [
+                {"addChatItemAction": {"item": {"liveChatTextMessageRenderer": {"message": {"runs": [{"text": text}]}}}}}]}},
+                ensure_ascii=False))
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path

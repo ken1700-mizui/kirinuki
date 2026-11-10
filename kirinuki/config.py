@@ -9,18 +9,19 @@ class Config:
     # --- 尺 ---
     min_duration: float = 15.0
     max_duration: float = 60.0
-    target_duration: float = 35.0
+    target_duration: float = 30.0
 
     # --- 境界 ---
     lead_in: float = 0.15          # 文頭の何秒前から始めるか
     tail: float = 0.8              # オチ後の余韻
     max_peak_to_end: float = 12.0  # ピークから終了点までの最大距離
 
-    # --- 盛り上がり度の重み ---
-    w_loud: float = 0.45
-    w_react: float = 0.35
-    w_density: float = 0.20
-    w_chat: float = 0.35           # チャットがある場合のみ使用
+    # --- 盛り上がり度（ノイジーOR の各手がかりの最大寄与）---
+    w_loud: float = 0.55
+    w_react: float = 0.60
+    w_density: float = 0.25
+    w_chat: float = 0.75           # チャットがある場合のみ使用（人間の反応＝最強の手がかり）
+    loud_gate_min: float = 0.4     # 裏付けのない大音量はこの割合しか数えない
     chat_delay: float = 5.0        # 視聴者の反応遅延（秒）
 
     # --- 候補スコアの重み ---

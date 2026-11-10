@@ -57,14 +57,26 @@ def build_timeline(segs: list[Segment], audio: AudioAnalysis, duration: float, c
         mu, sd = spoken.mean(), max(spoken.std(), 1e-6)
         density = np.where(dens_raw > 0, np.clip((dens_raw - mu) / sd, 0, 3) / 3, 0.0)
 
-    raw = cfg.w_loud * loud + cfg.w_react * react + cfg.w_density * density
-    wsum = cfg.w_loud + cfg.w_react + cfg.w_density
     chat_arr = np.zeros(n)
-    if chat is not None and len(chat) and chat.any():
+    has_chat = chat is not None and len(chat) > 0 and bool(np.any(chat))
+    if has_chat:
         chat_arr[: min(n, len(chat))] = chat[:n]
-        raw = raw + cfg.w_chat * chat_arr
-        wsum += cfg.w_chat
-    excite = _smooth(raw / wsum)
+
+    # 音量の裏取り: 「うるさいだけ」(BGM・効果音) を山場と誤認しないよう、
+    # 近く(±3秒)に笑い語かチャットの反応があるときだけ音量を満点で数える。
+    # （早口は話題によって常に高いことがあり、裏付けとしては弱いので使わない）
+    if segs or has_chat:
+        support = np.maximum(react, chat_arr)
+        support = np.array([support[max(0, t - 3):t + 4].max() for t in range(n)])
+        loud_eff = loud * (cfg.loud_gate_min + (1 - cfg.loud_gate_min) * np.clip(support * 2, 0, 1))
+    else:
+        loud_eff = loud  # 文字起こしもチャットも無いときは音量が唯一の手がかり
+
+    # ノイジーOR: どれか1つの手がかりが強ければ山場になり、複数が重なるほど確信が増す
+    miss = (1 - cfg.w_loud * loud_eff) * (1 - cfg.w_react * react) * (1 - cfg.w_density * density)
+    if has_chat:
+        miss = miss * (1 - cfg.w_chat * chat_arr)
+    excite = _smooth(1 - miss)
     return Timeline(loud, react, density, excite, audio.silences(cfg.silence_min), chat_arr)
 
 
@@ -117,21 +129,45 @@ def score_window(tl: Timeline, start: float, end: float, cfg: Config) -> tuple[f
 
     sil = sum(max(0.0, min(e, end) - max(s, start)) for s, e in tl.silences)
     silence_ratio = sil / max(dur, 1e-6)
-    dur_pen = abs(dur - cfg.target_duration) / cfg.target_duration * 0.15
+    # 長すぎは強く、短すぎは弱く罰する（中身が濃ければ短くてよい）
+    over = max(0.0, dur - cfg.target_duration) / cfg.target_duration
+    under = max(0.0, cfg.target_duration - dur) / cfg.target_duration
+    dur_pen = over * 0.2 + under * 0.04
     sil_pen = max(0.0, silence_ratio - 0.15) * 0.4
 
     # 前フリ: 山場（ピークの半分を初めて超える点）より前にどれだけ文脈があるか
     first_hot = int(np.argmax(ex >= peak * 0.5)) if peak > 0 else 0
     setup = min(first_hot / max(cfg.setup_seconds, 1e-6), 1.0)
 
+    # 切り際の判定: 窓の直後(3秒)もまだ盛り上がっていたら「途中で切った」、
+    # 直前(3秒)が盛り上がっていたら「別の山の余韻から始めた」
+    after = tl.excite[min(tl.n, b):min(tl.n, b + 3)]
+    before = tl.excite[max(0, a - 3):a]
+    cut_end = float(after.max()) / peak if len(after) and peak > 0 else 0.0
+    cut_start = float(before.max()) / peak if len(before) and peak > 0 else 0.0
+    cut_pen = 0.30 * max(0.0, cut_end - 0.4) + 0.15 * max(0.0, cut_start - 0.5)
+
     score = (cfg.w_peak * peak + cfg.w_hook * hook + cfg.w_mean * mean + cfg.w_payoff * payoff
-             + 0.06 * setup - dur_pen - sil_pen)
+             + 0.06 * setup - dur_pen - sil_pen - cut_pen)
     feats = {
+        "cut_end": round(cut_end, 3), "cut_start": round(cut_start, 3),
         "setup": round(setup, 3),
         "peak": round(peak, 3), "hook": round(hook, 3), "mean": round(mean, 3),
         "payoff": round(payoff, 3), "silence_ratio": round(silence_ratio, 3),
     }
     return score, feats
+
+
+def _steals_other_peak(excite: np.ndarray, start: float, end: float, p: int, radius: int = 5) -> bool:
+    """窓が「自分のピークより強い別の山」を含むか。
+
+    含む場合、その窓の点数は他の山からの借り物になり、本命と重複して両方を潰してしまう。
+    """
+    a, b = int(start), min(len(excite), int(math.ceil(end)))
+    own = excite[max(a, p - radius):min(b, p + radius + 1)]
+    own_v = float(own.max()) if len(own) else 0.0
+    outside = np.concatenate([excite[a:max(a, p - radius)], excite[min(b, p + radius + 1):b]])
+    return len(outside) > 0 and float(outside.max()) > own_v * 1.05 + 1e-6
 
 
 def generate_candidates(segs: list[Segment], tl: Timeline, duration: float, cfg: Config) -> list[Clip]:
@@ -153,6 +189,8 @@ def generate_candidates(segs: list[Segment], tl: Timeline, duration: float, cfg:
                 if d > cfg.max_duration:
                     break
                 if d < cfg.min_duration:
+                    continue
+                if _steals_other_peak(tl.excite, s, e, p):
                     continue
                 score, feats = score_window(tl, s, e, cfg)
                 gap = _gap_before(segs, i0)
@@ -193,9 +231,13 @@ def select(cands: list[Clip], n: int, thresh: float, min_relative: float = 0.0) 
     chosen: list[Clip] = []
     ranked = sorted(cands, key=lambda c: -c.score)
     floor = ranked[0].score * min_relative if ranked and ranked[0].score > 0 else float("-inf")
+    # 総合点は前フリ・オチ等の加点で底上げされうるので、山の高さそのものにも下限を設ける
+    top_peak = max((c.features.get("peak", 0.0) for c in ranked), default=0.0)
     for c in ranked:
         if c.score < floor:
             break
+        if top_peak > 0 and c.features.get("peak", top_peak) < top_peak * min_relative:
+            continue
         if all(overlap(c, x) <= thresh for x in chosen):
             chosen.append(c)
         if len(chosen) >= n:
